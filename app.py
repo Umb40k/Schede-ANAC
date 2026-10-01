@@ -65,6 +65,14 @@ def get_resources(base: str, dataset_id: str) -> list[dict]:
     ]
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def list_cig_datasets(base: str) -> list[str]:
+    """Elenca i dataset CKAN il cui id inizia per 'cig' (POST, come richiesto dal WAF ANAC)."""
+    r = requests.post(f"{base}/api/3/action/package_list", json={}, headers=HEADERS, timeout=60)
+    r.raise_for_status()
+    return sorted(n for n in r.json()["result"] if n.lower().startswith("cig"))
+
+
 def download(url: str, dest: Path, progress_cb=None) -> None:
     with requests.get(url, headers=HEADERS, stream=True, timeout=120) as r:
         r.raise_for_status()
@@ -173,16 +181,23 @@ st.caption(
 with st.sidebar:
     st.header("⚙️ Impostazioni")
     base = st.text_input("Base URL portale", ANAC_BASE)
-    years = st.multiselect(
-        "Anni (dataset `cig-AAAA`)",
-        options=list(range(2026, 2006, -1)),
-        default=[2025, 2026],
+    try:
+        available = list_cig_datasets(base)
+    except Exception as e:
+        available = []
+        st.warning(f"Elenco dataset non disponibile ({e}). Inserisci gli ID a mano.")
+    default_ds = [d for d in available if d in ("cig", "cig-2025", "cig-2026")]
+    datasets = st.multiselect(
+        "Dataset ANAC (CKAN)", options=available, default=default_ds,
+        help="Solo i dataset realmente presenti sul portale.",
     )
+    extra = st.text_input("Altri ID dataset (separati da virgola)", "")
+    datasets += [d.strip() for d in extra.split(",") if d.strip() and d.strip() not in datasets]
     fmt = st.radio("Formato dei dump", ["CSV", "JSON"], horizontal=True)
     stop_early = st.checkbox("Ferma la ricerca quando ho trovato tutti i CIG", True)
     st.info(
         "I dump ANAC sono mensili e molto grandi (centinaia di MB). "
-        "Restringi anni e mesi per velocizzare."
+        "Restringi dataset e mesi per velocizzare."
     )
 
 # --- Input CIG
@@ -210,12 +225,12 @@ if cigs:
 
 # --- Risorse
 resources: list[dict] = []
-if years:
-    for y in years:
+if datasets:
+    for ds in datasets:
         try:
-            resources += get_resources(base, f"cig-{y}")
+            resources += get_resources(base, ds)
         except Exception as e:
-            st.warning(f"Dataset cig-{y}: impossibile leggere i metadati ({e})")
+            st.warning(f"Dataset {ds}: impossibile leggere i metadati ({e})")
     resources = [r for r in resources if r["format"] == fmt]
 
 selected: list[dict] = []
@@ -228,7 +243,7 @@ if resources:
     )
     selected = [r for r, l in zip(resources, labels) if l in chosen]
     st.caption(f"{len(selected)} file selezionati")
-elif years:
+elif datasets:
     st.warning("Nessuna risorsa trovata per i filtri scelti.")
 
 # --- Ricerca
